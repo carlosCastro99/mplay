@@ -65,7 +65,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
 </head>
 <body>
 <header>
-  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v4</small></h1>
+  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v5</small></h1>
   <form class="src" id="urlForm">
     <input type="url" id="url" placeholder="Playlist URL (.m3u / .m3u8)">
     <button class="primary" type="submit">Load</button>
@@ -198,19 +198,22 @@ function play(i){
   const li = document.querySelector(`li[data-i="${i}"]`); if (li){ li.classList.add('on'); li.scrollIntoView({block:'nearest'}) }
   stopEngines();
   store.set('m3u.last', String(i));
-  let url = it.url;
-  if (location.protocol==='https:' && /^http:/i.test(url)){
-    // Many providers serve the same stream over https; try that before giving up
-    url = url.replace(/^http:/i,'https:');
-    const blocked = () => status('Blocked: this channel only works over http://, which browsers refuse inside an https page. Open the player from an http address (e.g. a home server) or use a native app like VLC.', true);
-    fail = blocked;
-  } else fail = failDefault;
+  const url = it.url;
   status('Loading…');
+  if (location.protocol==='https:' && /^http:/i.test(url)){
+    // Try the https version first, then the original http link (works if the browser allows insecure content for this site)
+    const blocked = () => status('Blocked: this channel only works over http://, which Chrome refuses inside an https page by default. See the fix in the chat, or use VLC.', true);
+    attemptAll(url.replace(/^http:/i,'https:'), () => attemptAll(url, blocked));
+  } else attemptAll(url, failDefault);
+}
+
+function attemptAll(url, onFail){
+  stopEngines();
   const path = url.split(/[?#]/)[0].toLowerCase();
-  if (/\.(mp4|webm|mkv|mov|m4v)$/.test(path)) return direct(url);
-  if (/\.ts$/.test(path)) return tryTs(url, () => tryHls(url.replace(/\.ts(?=$|[?#])/i,'.m3u8'), fail));
+  if (/\.(mp4|webm|mkv|mov|m4v)$/.test(path)) return direct(url, onFail);
+  if (/\.ts$/.test(path)) return tryTs(url, () => { stopEngines(); tryHls(url.replace(/\.ts(?=$|[?#])/i,'.m3u8'), onFail) });
   // .m3u8 or no extension (common for IPTV): HLS first, then MPEG-TS, then direct
-  tryHls(url, () => tryTs(url, () => direct(url)));
+  tryHls(url, () => { stopEngines(); tryTs(url, () => { stopEngines(); direct(url, onFail) }) });
 }
 
 let ts = null, attempt = 0;
@@ -221,9 +224,9 @@ function stopEngines(){
   if (ts){ try{ ts.destroy() }catch{} ts=null }
   v.onerror = null; v.removeAttribute('src'); v.load();
 }
-let fail = null;
+
 function failDefault(){ status('Couldn\'t play this channel. The stream may be offline, need a VPN or user agent your provider requires, use a codec the browser lacks (HEVC/AC-3), or block cross-origin playback.', true) }
-function direct(url, onFail=fail){
+function direct(url, onFail=failDefault){
   const a = attempt;
   v.onerror = () => { if (a===attempt) onFail() };
   v.src = url; v.play().catch(()=>{});
