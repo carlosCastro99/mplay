@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>M3U Player</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+<style>
+/* Layout: player left, channel list right; stacks on narrow screens */
+:root{
+  --bg:#0f1418; --panel:#161d23; --line:#253039; --fg:#e4e9ec; --muted:#8696a2;
+  --accent:#f2a93b; --live:#e5484d;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#eef1f3;--panel:#ffffff;--line:#d5dde2;--fg:#152027;--muted:#5d6d78;--accent:#b8700a;color-scheme:light}
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--sans);
+  padding:env(safe-area-inset-top,0) max(16px,env(safe-area-inset-right,0px)) env(safe-area-inset-bottom,0) max(16px,env(safe-area-inset-left,0px));
+  display:flex;flex-direction:column}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding-block:12px}
+header h1{font:600 15px var(--mono);letter-spacing:.06em;text-transform:uppercase;margin:0 12px 0 0}
+header h1 span{color:var(--accent)}
+.src{display:flex;gap:8px;flex:1;min-width:260px}
+input,select,button,textarea{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 10px}
+input[type=url]{flex:1;min-width:0}
+button{cursor:pointer;white-space:nowrap}
+button.primary{background:var(--accent);border-color:var(--accent);color:#1a1205;font-weight:600}
+button:hover{border-color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;min-height:0;padding-bottom:16px}
+.stage{display:flex;flex-direction:column;gap:10px;min-width:0}
+video{width:100%;aspect-ratio:16/9;max-width:100%;background:#000;border-radius:8px}
+.now{display:flex;gap:12px;align-items:center;min-height:44px}
+.now img{width:44px;height:44px;object-fit:contain;border-radius:6px;background:var(--panel)}
+.now .t{font-weight:600;font-size:16px}
+.now .g{color:var(--muted);font:12px var(--mono)}
+.ctrls{display:flex;gap:8px;margin-left:auto}
+.status{font:12px var(--mono);color:var(--muted);min-height:1.4em}
+.status.err{color:var(--live)}
+aside{display:flex;flex-direction:column;gap:8px;min-height:0;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px}
+.filters{display:flex;gap:8px}
+.filters input{flex:1;min-width:0}
+.filters select{max-width:45%}
+.count{font:11px var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+ul{list-style:none;margin:0;padding:0;overflow:auto;flex:1;min-height:200px}
+li{display:flex;gap:10px;align-items:center;padding:6px 8px;border-radius:6px;cursor:pointer}
+li:hover{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+li.on{background:color-mix(in srgb,var(--accent) 22%,transparent)}
+li .n{font:11px var(--mono);color:var(--muted);width:3ch;text-align:right;font-variant-numeric:tabular-nums}
+li img,li .ph{width:28px;height:28px;object-fit:contain;border-radius:4px;flex:none;background:var(--bg)}
+li .nm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;width:min(560px,92vw)}
+dialog textarea{width:100%;height:240px;font:12px var(--mono)}
+dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 0 0}
+@media (max-width:820px){main{grid-template-columns:1fr}aside{max-height:60vh}}
+</style>
+</head>
+<body>
+<header>
+  <h1>M3U<span>·</span>Player</h1>
+  <form class="src" id="urlForm">
+    <input type="url" id="url" placeholder="Playlist URL (.m3u / .m3u8)">
+    <button class="primary" type="submit">Load</button>
+  </form>
+  <button id="fileBtn" type="button">Open file</button>
+  <button id="pasteBtn" type="button">Paste</button>
+  <button id="sampleBtn" type="button">Sample</button>
+  <input type="file" id="file" accept=".m3u,.m3u8,audio/x-mpegurl,application/vnd.apple.mpegurl,text/plain" hidden>
+</header>
+
+<main>
+  <section class="stage">
+    <video id="v" controls playsinline></video>
+    <div class="now">
+      <img id="nowLogo" alt="" hidden>
+      <div><div class="t" id="nowTitle">Nothing playing</div><div class="g" id="nowGroup"></div></div>
+      <div class="ctrls">
+        <button id="prev" type="button" title="Previous (P)">◀ Prev</button>
+        <button id="next" type="button" title="Next (N)">Next ▶</button>
+      </div>
+    </div>
+    <div class="status" id="status"></div>
+  </section>
+  <aside>
+    <div class="filters">
+      <input type="search" id="q" placeholder="Search channels  ( / )">
+      <select id="group"><option value="">All groups</option></select>
+    </div>
+    <div class="count" id="count">0 items</div>
+    <ul id="list"></ul>
+  </aside>
+</main>
+
+<dialog id="pasteDlg">
+  <form method="dialog">
+    <textarea id="pasteTxt" placeholder="#EXTM3U&#10;#EXTINF:-1 tvg-logo=&quot;…&quot; group-title=&quot;News&quot;,Channel name&#10;https://example.com/stream.m3u8"></textarea>
+    <menu><button value="cancel">Cancel</button><button class="primary" value="ok" id="pasteOk">Load</button></menu>
+  </form>
+</dialog>
+
+<script>
+const SAMPLE = `#EXTM3U
+#EXTINF:-1 group-title="HLS test",Mux test stream (HLS)
+https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+#EXTINF:-1 group-title="HLS test",Apple bipbop advanced (fMP4)
+https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8
+#EXTINF:-1 group-title="MP4",Big Buck Bunny
+https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4
+#EXTINF:-1 group-title="MP4",Sintel
+https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4
+#EXTINF:-1 group-title="MP4",Tears of Steel
+https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4`;
+
+const $ = id => document.getElementById(id);
+const v = $('v');
+let items = [], view = [], cur = -1, hls = null;
+
+const store = {
+  get(k){ try{ return localStorage.getItem(k) }catch{ return null } },
+  set(k,val){ try{ localStorage.setItem(k,val) }catch{} }
+};
+
+function parse(text, base){
+  const out = []; let meta = null; const lines = text.replace(/^﻿/,'').split(/\r?\n/);
+  let groupHint = '';
+  for (let raw of lines){
+    const line = raw.trim(); if (!line) continue;
+    if (line.startsWith('#EXTINF')){
+      const attrs = {}; line.replace(/([\w-]+)="([^"]*)"/g,(_,k,val)=>{attrs[k.toLowerCase()]=val});
+      const comma = line.indexOf(',', line.lastIndexOf('"') > 0 ? line.lastIndexOf('"') : 0);
+      meta = { name: comma>=0 ? line.slice(comma+1).trim() : '', logo: attrs['tvg-logo']||'', group: attrs['group-title']||groupHint, id: attrs['tvg-id']||'' };
+    } else if (line.startsWith('#EXTGRP:')){ groupHint = line.slice(8).trim(); if (meta) meta.group = meta.group || groupHint; }
+    else if (line.startsWith('#')) continue;
+    else {
+      let url = line; try{ url = new URL(line, base || undefined).href }catch{}
+      const m = meta || {};
+      out.push({ name: m.name || url.split('/').pop().split('?')[0] || url, logo:m.logo||'', group:m.group||'', url });
+      meta = null;
+    }
+  }
+  return out;
+}
+
+function load(text, base, label){
+  // A master HLS playlist (no #EXTINF, has #EXT-X-STREAM-INF) is itself a stream, not a channel list
+  if (/#EXT-X-(STREAM-INF|TARGETDURATION)/.test(text) && !/#EXTINF:-1|tvg-|group-title/.test(text) && base){
+    items = [{name: label||base.split('/').pop(), logo:'', group:'', url: base}];
+  } else items = parse(text, base);
+  const groups = [...new Set(items.map(i=>i.group).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  $('group').innerHTML = '<option value="">All groups</option>' + groups.map(g=>`<option>${esc(g)}</option>`).join('');
+  $('q').value=''; cur=-1; render();
+  status(`${items.length} items loaded${label?' from '+label:''}`);
+  store.set('m3u.text', text.length < 4_000_000 ? text : ''); store.set('m3u.base', base||''); store.set('m3u.label', label||'');
+}
+
+function esc(s){ return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) }
+
+function render(){
+  const q = $('q').value.toLowerCase(), g = $('group').value;
+  view = items.map((it,i)=>({...it,i})).filter(it=>(!g||it.group===g)&&(!q||it.name.toLowerCase().includes(q)));
+  $('count').textContent = `${view.length} of ${items.length} items`;
+  const frag = document.createDocumentFragment();
+  view.slice(0,3000).forEach(it=>{
+    const li = document.createElement('li'); li.dataset.i = it.i; if (it.i===cur) li.className='on';
+    li.innerHTML = `<span class="n">${it.i+1}</span>${it.logo?`<img loading="lazy" src="${esc(it.logo)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'ph'}))">`:'<span class="ph"></span>'}<span class="nm" title="${esc(it.name)}">${esc(it.name)}</span>`;
+    frag.appendChild(li);
+  });
+  $('list').replaceChildren(frag);
+}
+
+function status(msg, err){ const s=$('status'); s.textContent=msg||''; s.classList.toggle('err',!!err) }
+
+function play(i){
+  const it = items[i]; if (!it) return; cur = i;
+  $('nowTitle').textContent = it.name; $('nowGroup').textContent = it.group || it.url;
+  const lg=$('nowLogo'); lg.hidden=!it.logo; if (it.logo) lg.src=it.logo;
+  document.querySelectorAll('li.on').forEach(l=>l.classList.remove('on'));
+  const li = document.querySelector(`li[data-i="${i}"]`); if (li){ li.classList.add('on'); li.scrollIntoView({block:'nearest'}) }
+  if (hls){ hls.destroy(); hls=null }
+  status('Loading…');
+  const isHls = /\.m3u8(\?|$)/i.test(it.url) || /\/hls\//i.test(it.url);
+  if (isHls && window.Hls && Hls.isSupported()){
+    hls = new Hls({enableWorker:true});
+    hls.on(Hls.Events.ERROR,(_,d)=>{ if (d.fatal){ status(`Stream error: ${d.details}. The server may block cross-origin playback or the link is offline.`, true); hls.destroy(); hls=null } });
+    hls.loadSource(it.url); hls.attachMedia(v);
+  } else v.src = it.url;
+  v.play().catch(()=>{});
+  store.set('m3u.last', String(i));
+}
+
+v.addEventListener('playing',()=>status(''));
+v.addEventListener('error',()=>{ if(!hls) status('This format or link could not be played in the browser (codec, CORS or offline).', true) });
+v.addEventListener('ended',()=>step(1));
+
+function step(d){
+  if (!view.length) return;
+  let pos = view.findIndex(it=>it.i===cur);
+  pos = pos<0 ? 0 : (pos+d+view.length)%view.length;
+  play(view[pos].i);
+}
+
+$('list').addEventListener('click',e=>{ const li=e.target.closest('li'); if(li) play(+li.dataset.i) });
+$('q').addEventListener('input',render);
+$('group').addEventListener('change',render);
+$('prev').onclick=()=>step(-1); $('next').onclick=()=>step(1);
+
+$('urlForm').addEventListener('submit',async e=>{
+  e.preventDefault(); const url=$('url').value.trim(); if(!url) return;
+  store.set('m3u.url',url); status('Fetching playlist…');
+  try{
+    const r = await fetch(url); if(!r.ok) throw new Error('HTTP '+r.status);
+    load(await r.text(), r.url||url, new URL(url).hostname);
+  }catch(err){
+    // Could be a direct stream URL or a CORS-blocked list: try it as a single stream
+    if (/\.(m3u8|mp4|webm|ts)(\?|$)/i.test(url)){ items=[{name:url.split('/').pop(),logo:'',group:'',url}]; render(); play(0) }
+    else status(`Couldn't fetch the playlist (${err.message}). The server probably blocks cross-origin requests. Download it and use Open file instead.`, true);
+  }
+});
+
+$('fileBtn').onclick=()=>$('file').click();
+$('file').addEventListener('change',async e=>{ const f=e.target.files[0]; if(f) load(await f.text(),'',f.name); e.target.value='' });
+$('pasteBtn').onclick=()=>{ $('pasteTxt').value=''; $('pasteDlg').showModal() };
+$('pasteDlg').addEventListener('close',()=>{ if($('pasteDlg').returnValue==='ok' && $('pasteTxt').value.trim()) load($('pasteTxt').value,'','pasted text') });
+$('sampleBtn').onclick=()=>load(SAMPLE,'','sample');
+
+document.addEventListener('dragover',e=>e.preventDefault());
+document.addEventListener('drop',async e=>{ e.preventDefault(); const f=e.dataTransfer.files[0]; if(f) load(await f.text(),'',f.name) });
+
+document.addEventListener('keydown',e=>{
+  if (e.target.matches('input,textarea,select')) { if(e.key==='Escape') e.target.blur(); return }
+  if (e.key==='/'){ e.preventDefault(); $('q').focus() }
+  else if (e.key==='n'||e.key==='ArrowDown') { e.preventDefault(); step(1) }
+  else if (e.key==='p'||e.key==='ArrowUp') { e.preventDefault(); step(-1) }
+  else if (e.key===' ') { e.preventDefault(); v.paused?v.play():v.pause() }
+  else if (e.key==='f') { (document.fullscreenElement?document.exitFullscreen():v.requestFullscreen()).catch?.(()=>{}) }
+});
+
+// Restore last session, else open the sample
+const saved = store.get('m3u.text');
+$('url').value = store.get('m3u.url')||'';
+if (saved){ load(saved, store.get('m3u.base')||'', store.get('m3u.label')||'last session'); const l=+store.get('m3u.last'); if(items[l]){ cur=l; render(); $('nowTitle').textContent=items[l].name } }
+else load(SAMPLE,'','sample');
+</script>
+</body>
+</html>
