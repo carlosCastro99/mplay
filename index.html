@@ -42,7 +42,11 @@ video{width:100%;aspect-ratio:16/9;max-width:100%;background:#000;border-radius:
 .now img{width:44px;height:44px;object-fit:contain;border-radius:6px;background:var(--panel)}
 .now .t{font-weight:600;font-size:16px}
 .now .g{color:var(--muted);font:12px var(--mono)}
-.ctrls{display:flex;gap:8px;margin-left:auto}
+.ctrls{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+.now{flex-wrap:wrap}
+.link{display:flex;gap:8px;align-items:center}
+.link input{flex:1;min-width:0;font:12px var(--mono);color:var(--muted)}
+.link a{color:var(--accent);font-weight:600;white-space:nowrap;text-decoration:none;border:1px solid var(--line);border-radius:6px;padding:7px 10px}
 .status{font:12px var(--mono);color:var(--muted);min-height:1.4em}
 .status.err{color:var(--live)}
 aside{display:flex;flex-direction:column;gap:8px;min-height:0;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px}
@@ -65,7 +69,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
 </head>
 <body>
 <header>
-  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v5</small></h1>
+  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v6</small></h1>
   <form class="src" id="urlForm">
     <input type="url" id="url" placeholder="Playlist URL (.m3u / .m3u8)">
     <button class="primary" type="submit">Load</button>
@@ -86,6 +90,11 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
         <button id="prev" type="button" title="Previous (P)">◀ Prev</button>
         <button id="next" type="button" title="Next (N)">Next ▶</button>
       </div>
+    </div>
+    <div class="link">
+      <input id="linkBox" readonly aria-label="Direct link of the current channel" placeholder="Select a channel to see its direct link">
+      <button id="copyBtn" type="button">Copy link</button>
+      <a id="vlcBtn" href="#" rel="noopener">Open in VLC</a>
     </div>
     <div class="status" id="status"></div>
   </section>
@@ -199,6 +208,7 @@ function play(i){
   stopEngines();
   store.set('m3u.last', String(i));
   const url = it.url;
+  showLink(url);
   status('Loading…');
   if (location.protocol==='https:' && /^http:/i.test(url)){
     // Try the https version first, then the original http link (works if the browser allows insecure content for this site)
@@ -262,6 +272,22 @@ function step(d){
 $('list').addEventListener('click',e=>{ const li=e.target.closest('li'); if(li) play(+li.dataset.i) });
 $('q').addEventListener('input',render);
 $('group').addEventListener('change',render);
+// Direct link: copy it or hand it straight to VLC
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+const isAndroid = /Android/i.test(navigator.userAgent);
+function vlcHref(url){
+  if (isIOS) return 'vlc-x-callback://x-callback-url/stream?url=' + encodeURIComponent(url);
+  if (isAndroid){ const m = url.match(/^(\w+):\/\/(.*)$/); if (m) return `intent://${m[2]}#Intent;scheme=${m[1]};package=org.videolan.vlc;type=video/*;end`; }
+  return url;
+}
+function showLink(url){ $('linkBox').value = url; $('vlcBtn').href = vlcHref(url); }
+$('copyBtn').onclick = async () => {
+  const box = $('linkBox'); if (!box.value) return status('Select a channel first.', true);
+  try{ await navigator.clipboard.writeText(box.value); status('Link copied. In VLC: Network → Open Network Stream, then paste.') }
+  catch{ box.focus(); box.select(); box.setSelectionRange(0, box.value.length); status('Link selected. Long-press it and tap Copy.') }
+};
+$('linkBox').addEventListener('focus', e => e.target.select());
+$('vlcBtn').addEventListener('click', e => { if (!$('linkBox').value){ e.preventDefault(); status('Select a channel first.', true) } });
 $('prev').onclick=()=>step(-1); $('next').onclick=()=>step(1);
 
 $('urlForm').addEventListener('submit',async e=>{
@@ -305,7 +331,7 @@ $('url').value = store.get('m3u.url')||'';
     load(saved.text, saved.base, saved.label || 'last session', true);
     status(`Restored ${items.length} items from ${saved.label || 'last session'}`);
     const l = +store.get('m3u.last');
-    if (items[l]){ cur=l; render(); $('nowTitle').textContent=items[l].name; $('nowGroup').textContent=items[l].group||'' }
+    if (items[l]){ cur=l; render(); $('nowTitle').textContent=items[l].name; $('nowGroup').textContent=items[l].group||''; showLink(items[l].url) }
   } else load(SAMPLE,'','sample');
 })();
 </script>
