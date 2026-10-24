@@ -186,11 +186,13 @@ function play(i){
   const li = document.querySelector(`li[data-i="${i}"]`); if (li){ li.classList.add('on'); li.scrollIntoView({block:'nearest'}) }
   stopEngines();
   store.set('m3u.last', String(i));
-  const url = it.url;
+  let url = it.url;
   if (location.protocol==='https:' && /^http:/i.test(url)){
-    status('Blocked: this channel uses http:// and the browser won\'t load http video inside an https page. Use an https playlist from your provider, or open the player as a local file on a computer.', true);
-    return;
-  }
+    // Many providers serve the same stream over https; try that before giving up
+    url = url.replace(/^http:/i,'https:');
+    const blocked = () => status('Blocked: this channel only works over http://, which browsers refuse inside an https page. Open the player from an http address (e.g. a home server) or use a native app like VLC.', true);
+    fail = blocked;
+  } else fail = failDefault;
   status('Loading…');
   const path = url.split(/[?#]/)[0].toLowerCase();
   if (/\.(mp4|webm|mkv|mov|m4v)$/.test(path)) return direct(url);
@@ -207,7 +209,8 @@ function stopEngines(){
   if (ts){ try{ ts.destroy() }catch{} ts=null }
   v.onerror = null; v.removeAttribute('src'); v.load();
 }
-function fail(){ status('Couldn\'t play this channel. The stream may be offline, need a VPN or user agent your provider requires, use a codec the browser lacks (HEVC/AC-3), or block cross-origin playback.', true) }
+let fail = null;
+function failDefault(){ status('Couldn\'t play this channel. The stream may be offline, need a VPN or user agent your provider requires, use a codec the browser lacks (HEVC/AC-3), or block cross-origin playback.', true) }
 function direct(url, onFail=fail){
   const a = attempt;
   v.onerror = () => { if (a===attempt) onFail() };
