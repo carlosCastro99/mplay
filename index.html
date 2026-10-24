@@ -149,7 +149,19 @@ function parse(text, base){
   return out;
 }
 
-function load(text, base, label){
+// Playlists are often several MB, beyond localStorage's quota, so keep them in IndexedDB
+const idb = {
+  db: null,
+  open(){ return this.db ||= new Promise((res,rej)=>{ try{
+    const r = indexedDB.open('m3u-player',1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }catch(e){ rej(e) } }) },
+  async get(k){ try{ const d=await this.open(); return await new Promise((res,rej)=>{ const q=d.transaction('kv').objectStore('kv').get(k); q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error) }) }catch{ return undefined } },
+  async set(k,val){ try{ const d=await this.open(); await new Promise((res,rej)=>{ const t=d.transaction('kv','readwrite'); t.objectStore('kv').put(val,k); t.oncomplete=res; t.onerror=()=>rej(t.error) }) }catch{} }
+};
+
+function load(text, base, label, restoring){
   // A master HLS playlist (no #EXTINF, has #EXT-X-STREAM-INF) is itself a stream, not a channel list
   if (/#EXT-X-(STREAM-INF|TARGETDURATION)/.test(text) && !/#EXTINF:-1|tvg-|group-title/.test(text) && base){
     items = [{name: label||base.split('/').pop(), logo:'', group:'', url: base}];
@@ -158,7 +170,7 @@ function load(text, base, label){
   $('group').innerHTML = '<option value="">All groups</option>' + groups.map(g=>`<option>${esc(g)}</option>`).join('');
   $('q').value=''; cur=-1; render();
   status(`${items.length} items loaded${label?' from '+label:''}`);
-  store.set('m3u.text', text.length < 4_000_000 ? text : ''); store.set('m3u.base', base||''); store.set('m3u.label', label||'');
+  if (!restoring && label!=='sample') idb.set('playlist', {text, base:base||'', label:label||'', saved:Date.now()});
 }
 
 function esc(s){ return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) }
@@ -280,11 +292,19 @@ document.addEventListener('keydown',e=>{
   else if (e.key==='f') { (document.fullscreenElement?document.exitFullscreen():v.requestFullscreen()).catch?.(()=>{}) }
 });
 
-// Restore last session, else open the sample
-const saved = store.get('m3u.text');
+// Restore the last playlist you loaded (file, URL or paste), else open the sample
 $('url').value = store.get('m3u.url')||'';
-if (saved){ load(saved, store.get('m3u.base')||'', store.get('m3u.label')||'last session'); const l=+store.get('m3u.last'); if(items[l]){ cur=l; render(); $('nowTitle').textContent=items[l].name } }
-else load(SAMPLE,'','sample');
+(async () => {
+  let saved = await idb.get('playlist');
+  const legacy = store.get('m3u.text');            // earlier versions used localStorage
+  if (!saved && legacy) saved = {text:legacy, base:store.get('m3u.base')||'', label:store.get('m3u.label')||''};
+  if (saved && saved.text){
+    load(saved.text, saved.base, saved.label || 'last session', true);
+    status(`Restored ${items.length} items from ${saved.label || 'last session'}`);
+    const l = +store.get('m3u.last');
+    if (items[l]){ cur=l; render(); $('nowTitle').textContent=items[l].name; $('nowGroup').textContent=items[l].group||'' }
+  } else load(SAMPLE,'','sample');
+})();
 </script>
 </body>
 </html>
