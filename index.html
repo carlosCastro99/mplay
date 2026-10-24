@@ -63,13 +63,21 @@ li img,li .ph{width:28px;height:28px;object-fit:contain;border-radius:4px;flex:n
 li .nm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;width:min(560px,92vw)}
 dialog textarea{width:100%;height:240px;font:12px var(--mono)}
+dialog h2{margin:0 0 6px;font-size:17px}
+dialog p,dialog ol{margin:0 0 10px;color:var(--muted);line-height:1.5}
+dialog ol{padding-left:20px}
+dialog b{color:var(--fg)}
+dialog code{font:12px var(--mono);color:var(--accent)}
+.pxform{display:flex;flex-direction:column;gap:6px}
+.pxform label{font:11px var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:6px}
+#copyWorker{align-self:flex-start}
 dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 0 0}
 @media (max-width:820px){main{grid-template-columns:1fr}aside{max-height:60vh}}
 </style>
 </head>
 <body>
 <header>
-  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v6</small></h1>
+  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v7</small></h1>
   <form class="src" id="urlForm">
     <input type="url" id="url" placeholder="Playlist URL (.m3u / .m3u8)">
     <button class="primary" type="submit">Load</button>
@@ -77,6 +85,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
   <button id="fileBtn" type="button">Open file</button>
   <button id="pasteBtn" type="button">Paste</button>
   <button id="sampleBtn" type="button">Sample</button>
+  <button id="proxyBtn" type="button">Proxy</button>
   <input type="file" id="file" accept=".m3u,.m3u8,audio/x-mpegurl,application/vnd.apple.mpegurl,text/plain" hidden>
 </header>
 
@@ -107,6 +116,26 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
     <ul id="list"></ul>
   </aside>
 </main>
+
+<dialog id="proxyDlg">
+  <form method="dialog" class="pxform">
+    <h2>Stream relay</h2>
+    <p>Browsers won't play <code>http://</code> channels inside this https page. A free Cloudflare Worker can relay them over https.</p>
+    <ol>
+      <li>Tap <b>Copy Worker code</b>.</li>
+      <li>On <b>dash.cloudflare.com</b> (free account): Workers &amp; Pages → Create → Hello World → Deploy → Edit code.</li>
+      <li>Replace all the code with what you copied, change <code>change-me</code> to your own key, and Deploy.</li>
+      <li>Paste the Worker address (…workers.dev) and your key below.</li>
+    </ol>
+    <button type="button" id="copyWorker">Copy Worker code</button>
+    <label for="pxUrl">Worker URL</label>
+    <input type="url" id="pxUrl" placeholder="https://mplay-relay.yourname.workers.dev">
+    <label for="pxKey">Key</label>
+    <input type="text" id="pxKey" autocomplete="off" placeholder="the word you set as KEY">
+    <div class="status" id="pxStatus"></div>
+    <menu><button value="cancel">Close</button><button class="primary" value="save">Save</button></menu>
+  </form>
+</dialog>
 
 <dialog id="pasteDlg">
   <form method="dialog">
@@ -211,20 +240,31 @@ function play(i){
   showLink(url);
   status('Loading…');
   if (location.protocol==='https:' && /^http:/i.test(url)){
-    // Try the https version first, then the original http link (works if the browser allows insecure content for this site)
-    const blocked = () => status('Blocked: this channel only works over http://, which Chrome refuses inside an https page by default. See the fix in the chat, or use VLC.', true);
-    attemptAll(url.replace(/^http:/i,'https:'), () => attemptAll(url, blocked));
+    const px = proxyCfg();
+    if (px.url){
+      // http stream on an https page: send it through your relay
+      const failPx = () => status('Couldn\'t play through the relay. Check the proxy URL and key in Proxy settings, or the stream may be offline.', true);
+      attemptAll(url, failPx, proxify);
+    } else {
+      // No relay: try https, then the raw http link (works only if the browser allows insecure content)
+      const blocked = () => status('Blocked: this channel is http:// and the browser refuses it on an https page. Tap Proxy to set up a free relay.', true);
+      attemptAll(url.replace(/^http:/i,'https:'), () => attemptAll(url, blocked));
+    }
   } else attemptAll(url, failDefault);
 }
 
-function attemptAll(url, onFail){
+// `wrap` maps each concrete stream URL to what the player actually requests (e.g. through the relay)
+function attemptAll(url, onFail, wrap = u => u){
   stopEngines();
   const path = url.split(/[?#]/)[0].toLowerCase();
-  if (/\.(mp4|webm|mkv|mov|m4v)$/.test(path)) return direct(url, onFail);
-  if (/\.ts$/.test(path)) return tryTs(url, () => { stopEngines(); tryHls(url.replace(/\.ts(?=$|[?#])/i,'.m3u8'), onFail) });
+  if (/\.(mp4|webm|mkv|mov|m4v)$/.test(path)) return direct(wrap(url), onFail);
+  if (/\.ts$/.test(path)) return tryTs(wrap(url), () => { stopEngines(); tryHls(wrap(url.replace(/\.ts(?=$|[?#])/i,'.m3u8')), onFail) });
   // .m3u8 or no extension (common for IPTV): HLS first, then MPEG-TS, then direct
-  tryHls(url, () => { stopEngines(); tryTs(url, () => { stopEngines(); direct(url, onFail) }) });
+  tryHls(wrap(url), () => { stopEngines(); tryTs(wrap(url), () => { stopEngines(); direct(wrap(url), onFail) }) });
 }
+
+function proxyCfg(){ try{ return JSON.parse(store.get('m3u.proxy')||'{}') }catch{ return {} } }
+function proxify(u){ const px = proxyCfg(); return `${px.url.replace(/\/+$/,'')}/?key=${encodeURIComponent(px.key||'')}&url=${encodeURIComponent(u)}` }
 
 let ts = null, attempt = 0;
 const hasNativeHls = !!v.canPlayType('application/vnd.apple.mpegurl');
@@ -272,6 +312,24 @@ function step(d){
 $('list').addEventListener('click',e=>{ const li=e.target.closest('li'); if(li) play(+li.dataset.i) });
 $('q').addEventListener('input',render);
 $('group').addEventListener('change',render);
+// Proxy settings
+$('proxyBtn').onclick = () => { const px = proxyCfg(); $('pxUrl').value = px.url||''; $('pxKey').value = px.key||''; $('pxStatus').textContent=''; $('proxyDlg').showModal() };
+$('proxyDlg').addEventListener('close', () => {
+  if ($('proxyDlg').returnValue !== 'save') return;
+  const url = $('pxUrl').value.trim(), key = $('pxKey').value.trim();
+  store.set('m3u.proxy', JSON.stringify(url ? {url, key} : {}));
+  status(url ? 'Relay saved. http channels will now play through it.' : 'Relay removed.');
+  if (url && cur >= 0) play(cur);
+});
+$('copyWorker').onclick = async () => {
+  const s = $('pxStatus');
+  try{
+    const code = await (await fetch('worker.js', {cache:'no-store'})).text();
+    await navigator.clipboard.writeText(code);
+    s.textContent = 'Worker code copied.'; s.classList.remove('err');
+  }catch{ s.innerHTML = 'Couldn\'t copy here. Open <b>carloscastro99.github.io/mplay/worker.js</b>, select all and copy.'; }
+};
+
 // Direct link: copy it or hand it straight to VLC
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
 const isAndroid = /Android/i.test(navigator.userAgent);
