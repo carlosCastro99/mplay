@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js"></script>
 <style>
 /* Layout: player left, channel list right; stacks on narrow screens */
 :root{
@@ -183,20 +184,54 @@ function play(i){
   const lg=$('nowLogo'); lg.hidden=!it.logo; if (it.logo) lg.src=it.logo;
   document.querySelectorAll('li.on').forEach(l=>l.classList.remove('on'));
   const li = document.querySelector(`li[data-i="${i}"]`); if (li){ li.classList.add('on'); li.scrollIntoView({block:'nearest'}) }
-  if (hls){ hls.destroy(); hls=null }
-  status('Loading…');
-  const isHls = /\.m3u8(\?|$)/i.test(it.url) || /\/hls\//i.test(it.url);
-  if (isHls && window.Hls && Hls.isSupported()){
-    hls = new Hls({enableWorker:true});
-    hls.on(Hls.Events.ERROR,(_,d)=>{ if (d.fatal){ status(`Stream error: ${d.details}. The server may block cross-origin playback or the link is offline.`, true); hls.destroy(); hls=null } });
-    hls.loadSource(it.url); hls.attachMedia(v);
-  } else v.src = it.url;
-  v.play().catch(()=>{});
+  stopEngines();
   store.set('m3u.last', String(i));
+  const url = it.url;
+  if (location.protocol==='https:' && /^http:/i.test(url)){
+    status('Blocked: this channel uses http:// and the browser won\'t load http video inside an https page. Use an https playlist from your provider, or open the player as a local file on a computer.', true);
+    return;
+  }
+  status('Loading…');
+  const path = url.split(/[?#]/)[0].toLowerCase();
+  if (/\.(mp4|webm|mkv|mov|m4v)$/.test(path)) return direct(url);
+  if (/\.ts$/.test(path)) return tryTs(url, () => tryHls(url.replace(/\.ts(?=$|[?#])/i,'.m3u8'), fail));
+  // .m3u8 or no extension (common for IPTV): HLS first, then MPEG-TS, then direct
+  tryHls(url, () => tryTs(url, () => direct(url)));
+}
+
+let ts = null, attempt = 0;
+const hasNativeHls = !!v.canPlayType('application/vnd.apple.mpegurl');
+function stopEngines(){
+  attempt++;
+  if (hls){ hls.destroy(); hls=null }
+  if (ts){ try{ ts.destroy() }catch{} ts=null }
+  v.onerror = null; v.removeAttribute('src'); v.load();
+}
+function fail(){ status('Couldn\'t play this channel. The stream may be offline, need a VPN or user agent your provider requires, use a codec the browser lacks (HEVC/AC-3), or block cross-origin playback.', true) }
+function direct(url, onFail=fail){
+  const a = attempt;
+  v.onerror = () => { if (a===attempt) onFail() };
+  v.src = url; v.play().catch(()=>{});
+}
+function tryHls(url, onFail){
+  const a = attempt;
+  if (window.Hls && Hls.isSupported()){
+    hls = new Hls({enableWorker:true, manifestLoadingMaxRetry:1, levelLoadingMaxRetry:1});
+    hls.on(Hls.Events.ERROR,(_,d)=>{ if (d.fatal && a===attempt){ hls.destroy(); hls=null; onFail() } });
+    hls.on(Hls.Events.MANIFEST_PARSED,()=>v.play().catch(()=>{}));
+    hls.loadSource(url); hls.attachMedia(v);
+  } else if (hasNativeHls) direct(url, onFail);   // iPhone/Safari
+  else onFail();
+}
+function tryTs(url, onFail){
+  const a = attempt;
+  if (!(window.mpegts && mpegts.getFeatureList().mseLivePlayback)) return onFail();
+  ts = mpegts.createPlayer({type:'mpegts', isLive:true, url}, {enableWorker:true, lazyLoad:false});
+  ts.on(mpegts.Events.ERROR,()=>{ if (a===attempt){ try{ts.destroy()}catch{} ts=null; onFail() } });
+  ts.attachMediaElement(v); ts.load(); v.play().catch(()=>{});
 }
 
 v.addEventListener('playing',()=>status(''));
-v.addEventListener('error',()=>{ if(!hls) status('This format or link could not be played in the browser (codec, CORS or offline).', true) });
 v.addEventListener('ended',()=>step(1));
 
 function step(d){
