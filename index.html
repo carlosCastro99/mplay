@@ -77,7 +77,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
 </head>
 <body>
 <header>
-  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v9</small></h1>
+  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v10</small></h1>
   <form class="src" id="urlForm">
     <input type="url" id="url" placeholder="Playlist URL (.m3u / .m3u8)">
     <button class="primary" type="submit">Load</button>
@@ -179,6 +179,8 @@ function parse(text, base){
     else if (line.startsWith('#')) continue;
     else {
       let url = line; try{ url = new URL(line, base || undefined).href }catch{}
+      // Undo links an earlier version of the local server rewrote to point at itself
+      for (let k=0; k<3; k++){ const m = url.match(/\/relay\?(?:key=[^&]*&)?url=([^&]+)/); if (!m) break; try{ url = decodeURIComponent(m[1]) }catch{ break } }
       const m = meta || {};
       out.push({ name: m.name || url.split('/').pop().split('?')[0] || url, logo:m.logo||'', group:m.group||'', url });
       meta = null;
@@ -269,7 +271,7 @@ function attemptAll(url, onFail, wrap = u => u){
   tryHls(wrap(url), () => { stopEngines(); tryTs(wrap(url), () => { stopEngines(); direct(wrap(url), onFail) }) });
 }
 
-function localRelay(u){ return window.MPLAY_LOCAL_RELAY + '?url=' + encodeURIComponent(u) }
+function localRelay(u){ return new URL(window.MPLAY_LOCAL_RELAY, location.href).href + '?url=' + encodeURIComponent(u) }
 function proxyCfg(){ try{ return JSON.parse(store.get('m3u.proxy')||'{}') }catch{ return {} } }
 function proxify(u){ const px = proxyCfg(); return `${px.url.replace(/\/+$/,'')}/?key=${encodeURIComponent(px.key||'')}&url=${encodeURIComponent(u)}` }
 
@@ -364,7 +366,7 @@ $('urlForm').addEventListener('submit',async e=>{
   e.preventDefault(); const url=$('url').value.trim(); if(!url) return;
   store.set('m3u.url',url); status('Fetching playlist…');
   try{
-    const r = await fetch(window.MPLAY_LOCAL_RELAY ? localRelay(url) : url); if(!r.ok) throw new Error('HTTP '+r.status);
+    const r = await fetch(window.MPLAY_LOCAL_RELAY ? localRelay(url) + '&raw=1' : url); if(!r.ok) throw new Error('HTTP '+r.status);
     load(await r.text(), window.MPLAY_LOCAL_RELAY ? url : (r.url||url), new URL(url).hostname);
   }catch(err){
     // Could be a direct stream URL or a CORS-blocked list: try it as a single stream

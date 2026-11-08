@@ -50,7 +50,7 @@ async function relay(req, res, self) {
   let started = false;
   up.once('data', first => {
     started = true;
-    const isPlaylist = first.slice(0, 16).toString().trimStart().startsWith('#EXTM3U') || /mpegurl/i.test(up.headers['content-type'] || '');
+    const isPlaylist = !self.searchParams.has('raw') && (first.slice(0, 16).toString().trimStart().startsWith('#EXTM3U') || /mpegurl/i.test(up.headers['content-type'] || ''));
     if (!isPlaylist) {
       res.writeHead(up.statusCode, out);
       res.write(first);
