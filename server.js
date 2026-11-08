@@ -8,6 +8,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const os = require('os');
 const { spawn, spawnSync } = require('child_process');
 
 // ffmpeg (optional) converts channels Chrome can't decode (HEVC video, AC-3/MP2 audio)
@@ -56,7 +57,7 @@ function transcode(req, res, self) {
 }
 
 const PORT = Number(process.env.PORT) || 8787;
-const HOST = process.env.HOST || '127.0.0.1';   // only this PC; set HOST=0.0.0.0 to allow your phone on the same Wi-Fi
+const HOST = process.env.HOST || '0.0.0.0';   // this PC and devices on the same Wi-Fi; set HOST=127.0.0.1 for this PC only
 const UA = 'VLC/3.0.21 LibVLC/3.0.21';           // many IPTV servers only answer media players
 const PAGE = path.join(__dirname, 'index.html');
 
@@ -151,5 +152,11 @@ http.createServer((req, res) => {
   process.exit(1);
 }).listen(PORT, HOST, () => {
   console.log(`M3U Player running at http://localhost:${PORT}  (close this window to stop)`);
+  if (HOST === '0.0.0.0') {
+    const lan = Object.values(os.networkInterfaces()).flat()
+      .filter(a => a && a.family === 'IPv4' && !a.internal && !/^169\.254\./.test(a.address))
+      .map(a => `http://${a.address}:${PORT}`);
+    if (lan.length) console.log(`On your phone (same Wi-Fi), open:  ${lan.join('   or   ')}`);
+  }
   console.log(hasFfmpeg ? `ffmpeg found: channels Chrome cannot decode will be converted (video encoder: ${encoder.name}).` : 'ffmpeg NOT found: some channels (HEVC, AC-3) will not play. Install it with:  winget install Gyan.FFmpeg   then run start.bat again.');
 });
