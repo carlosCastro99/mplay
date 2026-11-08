@@ -77,7 +77,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
 </head>
 <body>
 <header>
-  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v7</small></h1>
+  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v8</small></h1>
   <form class="src" id="urlForm">
     <input type="url" id="url" placeholder="Playlist URL (.m3u / .m3u8)">
     <button class="primary" type="submit">Load</button>
@@ -239,6 +239,11 @@ function play(i){
   const url = it.url;
   showLink(url);
   status('Loading…');
+  if (window.MPLAY_LOCAL_RELAY){
+    // Served by the local server on your PC: every stream goes through it (no CORS, no http block)
+    attemptAll(url, failDefault, localRelay);
+    return;
+  }
   if (location.protocol==='https:' && /^http:/i.test(url)){
     const px = proxyCfg();
     if (px.url){
@@ -263,6 +268,7 @@ function attemptAll(url, onFail, wrap = u => u){
   tryHls(wrap(url), () => { stopEngines(); tryTs(wrap(url), () => { stopEngines(); direct(wrap(url), onFail) }) });
 }
 
+function localRelay(u){ return window.MPLAY_LOCAL_RELAY + '?url=' + encodeURIComponent(u) }
 function proxyCfg(){ try{ return JSON.parse(store.get('m3u.proxy')||'{}') }catch{ return {} } }
 function proxify(u){ const px = proxyCfg(); return `${px.url.replace(/\/+$/,'')}/?key=${encodeURIComponent(px.key||'')}&url=${encodeURIComponent(u)}` }
 
@@ -352,8 +358,8 @@ $('urlForm').addEventListener('submit',async e=>{
   e.preventDefault(); const url=$('url').value.trim(); if(!url) return;
   store.set('m3u.url',url); status('Fetching playlist…');
   try{
-    const r = await fetch(url); if(!r.ok) throw new Error('HTTP '+r.status);
-    load(await r.text(), r.url||url, new URL(url).hostname);
+    const r = await fetch(window.MPLAY_LOCAL_RELAY ? localRelay(url) : url); if(!r.ok) throw new Error('HTTP '+r.status);
+    load(await r.text(), window.MPLAY_LOCAL_RELAY ? url : (r.url||url), new URL(url).hostname);
   }catch(err){
     // Could be a direct stream URL or a CORS-blocked list: try it as a single stream
     if (/\.(m3u8|mp4|webm|ts)(\?|$)/i.test(url)){ items=[{name:url.split('/').pop(),logo:'',group:'',url}]; render(); play(0) }
