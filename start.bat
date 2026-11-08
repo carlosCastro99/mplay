@@ -7,6 +7,8 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+rem Stop any player server that is already running
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /r /c:"127.0.0.1:8787 .*LISTENING"') do taskkill /f /pid %%p >nul 2>nul
 start "" http://localhost:8787
 node server.js
 pause

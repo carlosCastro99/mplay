@@ -92,6 +92,10 @@ http.createServer((req, res) => {
     return;
   }
   res.writeHead(404); res.end();
+}).on('error', e => {
+  if (e.code === 'EADDRINUSE') console.log(`Port ${PORT} is already in use. Close the other M3U Player window (or restart the PC) and run start.bat again.`);
+  else console.log('Server error: ' + e.message);
+  process.exit(1);
 }).listen(PORT, HOST, () => {
   console.log(`M3U Player running at http://localhost:${PORT}  (close this window to stop)`);
 });
