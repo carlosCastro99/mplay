@@ -39,12 +39,14 @@ async function relay(req, res, self) {
 
   let up;
   try { up = await get(target, headers); }
-  catch (e) { res.writeHead(502, { 'Access-Control-Allow-Origin': '*' }); return res.end('Upstream unreachable: ' + e.message); }
+  catch (e) { console.log(`${new Date().toLocaleTimeString()}  FAILED  ${e.message}  ${target.replace(/\?.*/, '')}`); res.writeHead(502, { 'Access-Control-Allow-Origin': '*' }); return res.end('Upstream unreachable: ' + e.message); }
 
   const out = { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
   for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) if (up.headers[h]) out[h] = up.headers[h];
 
   // Peek at the first bytes to tell an HLS playlist from a media stream
+  const short = target.replace(/^(https?:\/\/[^/]+).*?([^/?#]*)(\?.*)?$/, '$1/…/$2');
+  console.log(`${new Date().toLocaleTimeString()}  ${up.statusCode}  ${up.headers['content-type'] || '-'}  ${short}`);
   let started = false;
   up.once('data', first => {
     started = true;

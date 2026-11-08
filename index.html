@@ -77,7 +77,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
 </head>
 <body>
 <header>
-  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v8</small></h1>
+  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v9</small></h1>
   <form class="src" id="urlForm">
     <input type="url" id="url" placeholder="Playlist URL (.m3u / .m3u8)">
     <button class="primary" type="submit">Load</button>
@@ -236,6 +236,7 @@ function play(i){
   const li = document.querySelector(`li[data-i="${i}"]`); if (li){ li.classList.add('on'); li.scrollIntoView({block:'nearest'}) }
   stopEngines();
   store.set('m3u.last', String(i));
+  errLog = [];
   const url = it.url;
   showLink(url);
   status('Loading…');
@@ -281,17 +282,19 @@ function stopEngines(){
   v.onerror = null; v.removeAttribute('src'); v.load();
 }
 
-function failDefault(){ status('Couldn\'t play this channel. The stream may be offline, need a VPN or user agent your provider requires, use a codec the browser lacks (HEVC/AC-3), or block cross-origin playback.', true) }
+let errLog = [];
+function noteErr(engine, msg){ errLog.push(engine + ': ' + msg); console.warn('[mplay]', engine, msg) }
+function failDefault(){ status('Couldn\'t play this channel. Details → ' + (errLog.join(' | ') || 'no error reported'), true) }
 function direct(url, onFail=failDefault){
   const a = attempt;
-  v.onerror = () => { if (a===attempt) onFail() };
+  v.onerror = () => { if (a===attempt){ const e=v.error; noteErr('video', e ? `code ${e.code}${e.message?' '+e.message:''}` : 'unknown'); onFail() } };
   v.src = url; v.play().catch(()=>{});
 }
 function tryHls(url, onFail){
   const a = attempt;
   if (window.Hls && Hls.isSupported()){
     hls = new Hls({enableWorker:true, manifestLoadingMaxRetry:1, levelLoadingMaxRetry:1});
-    hls.on(Hls.Events.ERROR,(_,d)=>{ if (d.fatal && a===attempt){ hls.destroy(); hls=null; onFail() } });
+    hls.on(Hls.Events.ERROR,(_,d)=>{ if (d.fatal && a===attempt){ noteErr('hls', d.details + (d.response&&d.response.code?' HTTP '+d.response.code:'') + (d.reason?' '+d.reason:'')); hls.destroy(); hls=null; onFail() } });
     hls.on(Hls.Events.MANIFEST_PARSED,()=>v.play().catch(()=>{}));
     hls.loadSource(url); hls.attachMedia(v);
   } else if (hasNativeHls) direct(url, onFail);   // iPhone/Safari
@@ -301,11 +304,14 @@ function tryTs(url, onFail){
   const a = attempt;
   if (!(window.mpegts && mpegts.getFeatureList().mseLivePlayback)) return onFail();
   ts = mpegts.createPlayer({type:'mpegts', isLive:true, url}, {enableWorker:true, lazyLoad:false});
-  ts.on(mpegts.Events.ERROR,()=>{ if (a===attempt){ try{ts.destroy()}catch{} ts=null; onFail() } });
+  ts.on(mpegts.Events.ERROR,(type,detail,info)=>{ if (a===attempt){ noteErr('ts', `${type} ${detail}${info&&info.code?' HTTP '+info.code:''}${info&&info.msg?' '+info.msg:''}`); try{ts.destroy()}catch{} ts=null; onFail() } });
   ts.attachMediaElement(v); ts.load(); v.play().catch(()=>{});
 }
 
-v.addEventListener('playing',()=>status(''));
+v.addEventListener('playing',()=>{
+  status('');
+  setTimeout(()=>{ if (!v.paused && v.videoWidth===0) status('Playing, but no picture: this channel probably uses HEVC/H.265 video, which this browser can\'t decode. Try Microsoft Edge, or VLC.', true) }, 3000);
+});
 v.addEventListener('ended',()=>step(1));
 
 function step(d){
