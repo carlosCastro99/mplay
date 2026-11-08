@@ -19,15 +19,17 @@ function transcode(req, res, self) {
   if (!hasFfmpeg) { res.writeHead(501, { 'Access-Control-Allow-Origin': '*' }); return res.end('ffmpeg not installed'); }
   if (!target || !/^https?:\/\//i.test(target)) { res.writeHead(400); return res.end('Missing ?url='); }
   const full = self.searchParams.get('mode') === 'full';
-  const video = full ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-g', '50'] : ['-c:v', 'copy'];
-  const args = ['-hide_banner', '-loglevel', 'error', '-user_agent', UA,
-    '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-i', target,
-    '-map', '0:v:0?', '-map', '0:a:0?', ...video, '-c:a', 'aac', '-b:a', '160k', '-ac', '2',
-    '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'];
+  const video = full ? ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-crf', '23', '-pix_fmt', 'yuv420p', '-g', '50', '-keyint_min', '25', '-sc_threshold', '0'] : ['-c:v', 'copy'];
+  const args = ['-hide_banner', '-loglevel', 'fatal', '-user_agent', UA,
+    '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+    '-fflags', '+genpts+discardcorrupt', '-analyzeduration', '3000000', '-probesize', '3000000', '-i', target,
+    '-map', '0:v:0?', '-map', '0:a:0?', ...video, '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
+    // Live MPEG-TS out: the player starts it within a second or two (fragmented MP4 waits for keyframes)
+    '-f', 'mpegts', '-mpegts_flags', '+resend_headers', '-muxdelay', '0', '-muxpreload', '0', 'pipe:1'];
   console.log(`${new Date().toLocaleTimeString()}  ffmpeg ${full ? 'convert video+audio' : 'convert audio'}  ${target.replace(/^(https?:\/\/[^/]+).*?([^/?#]*)(\?.*)?$/, '$1/…/$2')}`);
   const ff = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   ff.stderr.on('data', d => process.stdout.write('  ffmpeg: ' + d));
-  res.writeHead(200, { 'Content-Type': 'video/mp4', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+  res.writeHead(200, { 'Content-Type': 'video/mp2t', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
   ff.stdout.pipe(res);
   ff.on('close', () => res.end());
   req.on('close', () => ff.kill('SIGKILL'));

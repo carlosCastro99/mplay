@@ -77,7 +77,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
 </head>
 <body>
 <header>
-  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v12</small></h1>
+  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v13</small></h1>
   <form class="src" id="urlForm">
     <input type="url" id="url" placeholder="Playlist URL (.m3u / .m3u8)">
     <button class="primary" type="submit">Load</button>
@@ -281,10 +281,10 @@ function tryConvert(url, mode, onFail){
   stopEngines();
   convertMode = mode; convertNext = onFail;
   status(mode === 'copy' ? 'Converting audio for the browser…' : 'Converting video for the browser (uses more CPU)…');
-  direct(location.origin + '/transcode?mode=' + mode + '&url=' + encodeURIComponent(url), onFail);
   const a = attempt;
+  tryTs(location.origin + '/transcode?mode=' + mode + '&url=' + encodeURIComponent(url), () => { if (convertNext){ convertNext = null; onFail() } });
   // A stream that never starts (or plays without a picture) moves on to the next step
-  setTimeout(() => { if (a === attempt && (v.readyState < 2 || v.videoWidth === 0)){ noteErr('convert-' + mode, 'no picture after 15s'); const n = convertNext; convertNext = null; n && n() } }, 15000);
+  setTimeout(() => { if (a === attempt && convertNext && (v.currentTime === 0 || v.videoWidth === 0)){ noteErr('convert-' + mode, 'no picture after 25s'); const n = convertNext; convertNext = null; n() } }, 25000);
 }
 function localRelay(u){ return new URL(window.MPLAY_LOCAL_RELAY, location.href).href + '?url=' + encodeURIComponent(u) }
 function proxyCfg(){ try{ return JSON.parse(store.get('m3u.proxy')||'{}') }catch{ return {} } }
@@ -328,6 +328,7 @@ function tryTs(url, onFail){
 
 v.addEventListener('playing',()=>{
   status('');
+  convertNext = null;
   setTimeout(()=>{ if (!v.paused && v.videoWidth===0 && !convertNext) status('Playing, but no picture: this channel probably uses HEVC/H.265 video, which this browser can\'t decode. Try Microsoft Edge, or VLC.', true) }, 3000);
 });
 v.addEventListener('ended',()=>step(1));
