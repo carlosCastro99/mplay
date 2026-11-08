@@ -77,7 +77,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
 </head>
 <body>
 <header>
-  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v10</small></h1>
+  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v12</small></h1>
   <form class="src" id="urlForm">
     <input type="url" id="url" placeholder="Playlist URL (.m3u / .m3u8)">
     <button class="primary" type="submit">Load</button>
@@ -237,6 +237,7 @@ function play(i){
   document.querySelectorAll('li.on').forEach(l=>l.classList.remove('on'));
   const li = document.querySelector(`li[data-i="${i}"]`); if (li){ li.classList.add('on'); li.scrollIntoView({block:'nearest'}) }
   stopEngines();
+  convertNext = null;
   store.set('m3u.last', String(i));
   errLog = [];
   const url = it.url;
@@ -268,9 +269,23 @@ function attemptAll(url, onFail, wrap = u => u){
   if (/\.(mp4|webm|mkv|mov|m4v)$/.test(path)) return direct(wrap(url), onFail);
   if (/\.ts$/.test(path)) return tryTs(wrap(url), () => { stopEngines(); tryHls(wrap(url.replace(/\.ts(?=$|[?#])/i,'.m3u8')), onFail) });
   // .m3u8 or no extension (common for IPTV): HLS first, then MPEG-TS, then direct
-  tryHls(wrap(url), () => { stopEngines(); tryTs(wrap(url), () => { stopEngines(); direct(wrap(url), onFail) }) });
+  // Through the local server, ask it to reject non-playlists at once so the TS attempt starts immediately
+  const hlsUrl = wrap === localRelay ? localRelay(url) + '&expect=hls' : wrap(url);
+  // Last resort on the PC server: let ffmpeg convert audio, then video+audio, into something Chrome decodes
+  const convert = (wrap === localRelay && window.MPLAY_FFMPEG) ? (next) => tryConvert(url, 'copy', () => tryConvert(url, 'full', next)) : (next) => next();
+  tryHls(hlsUrl, () => { stopEngines(); tryTs(wrap(url), () => { convert(() => { stopEngines(); direct(wrap(url), onFail) }) }) });
 }
 
+let convertMode = null, convertNext = null;
+function tryConvert(url, mode, onFail){
+  stopEngines();
+  convertMode = mode; convertNext = onFail;
+  status(mode === 'copy' ? 'Converting audio for the browser…' : 'Converting video for the browser (uses more CPU)…');
+  direct(location.origin + '/transcode?mode=' + mode + '&url=' + encodeURIComponent(url), onFail);
+  const a = attempt;
+  // A stream that never starts (or plays without a picture) moves on to the next step
+  setTimeout(() => { if (a === attempt && (v.readyState < 2 || v.videoWidth === 0)){ noteErr('convert-' + mode, 'no picture after 15s'); const n = convertNext; convertNext = null; n && n() } }, 15000);
+}
 function localRelay(u){ return new URL(window.MPLAY_LOCAL_RELAY, location.href).href + '?url=' + encodeURIComponent(u) }
 function proxyCfg(){ try{ return JSON.parse(store.get('m3u.proxy')||'{}') }catch{ return {} } }
 function proxify(u){ const px = proxyCfg(); return `${px.url.replace(/\/+$/,'')}/?key=${encodeURIComponent(px.key||'')}&url=${encodeURIComponent(u)}` }
@@ -295,7 +310,7 @@ function direct(url, onFail=failDefault){
 function tryHls(url, onFail){
   const a = attempt;
   if (window.Hls && Hls.isSupported()){
-    hls = new Hls({enableWorker:true, manifestLoadingMaxRetry:1, levelLoadingMaxRetry:1});
+    hls = new Hls({enableWorker:true, manifestLoadingMaxRetry:0, manifestLoadingTimeOut:8000, levelLoadingMaxRetry:1});
     hls.on(Hls.Events.ERROR,(_,d)=>{ if (d.fatal && a===attempt){ noteErr('hls', d.details + (d.response&&d.response.code?' HTTP '+d.response.code:'') + (d.reason?' '+d.reason:'')); hls.destroy(); hls=null; onFail() } });
     hls.on(Hls.Events.MANIFEST_PARSED,()=>v.play().catch(()=>{}));
     hls.loadSource(url); hls.attachMedia(v);
@@ -307,12 +322,13 @@ function tryTs(url, onFail){
   if (!(window.mpegts && mpegts.getFeatureList().mseLivePlayback)) return onFail();
   ts = mpegts.createPlayer({type:'mpegts', isLive:true, url}, {enableWorker:true, lazyLoad:false});
   ts.on(mpegts.Events.ERROR,(type,detail,info)=>{ if (a===attempt){ noteErr('ts', `${type} ${detail}${info&&info.code?' HTTP '+info.code:''}${info&&info.msg?' '+info.msg:''}`); try{ts.destroy()}catch{} ts=null; onFail() } });
+  ts.on(mpegts.Events.MEDIA_INFO, info => { if (a===attempt && info && info.mimeType) noteErr('codecs', info.mimeType) });
   ts.attachMediaElement(v); ts.load(); v.play().catch(()=>{});
 }
 
 v.addEventListener('playing',()=>{
   status('');
-  setTimeout(()=>{ if (!v.paused && v.videoWidth===0) status('Playing, but no picture: this channel probably uses HEVC/H.265 video, which this browser can\'t decode. Try Microsoft Edge, or VLC.', true) }, 3000);
+  setTimeout(()=>{ if (!v.paused && v.videoWidth===0 && !convertNext) status('Playing, but no picture: this channel probably uses HEVC/H.265 video, which this browser can\'t decode. Try Microsoft Edge, or VLC.', true) }, 3000);
 });
 v.addEventListener('ended',()=>step(1));
 
