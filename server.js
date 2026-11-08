@@ -14,21 +14,41 @@ const { spawn, spawnSync } = require('child_process');
 const FFMPEG = process.env.FFMPEG || 'ffmpeg';
 const hasFfmpeg = (() => { try { return spawnSync(FFMPEG, ['-version']).status === 0 } catch { return false } })();
 
+// Pick the fastest working H.264 encoder: graphics card (NVIDIA / Intel / AMD) first, CPU last
+const ENCODERS = [
+  { name: 'NVIDIA GPU', args: ['-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'll', '-rc', 'vbr', '-cq', '23', '-g', '50', '-pix_fmt', 'yuv420p'] },
+  { name: 'Intel GPU',  args: ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-global_quality', '23', '-g', '50', '-pix_fmt', 'nv12'] },
+  { name: 'AMD GPU',    args: ['-c:v', 'h264_amf', '-quality', 'speed', '-rc', 'cqp', '-qp_i', '23', '-qp_p', '23', '-g', '50', '-pix_fmt', 'nv12'] },
+];
+const CPU_ENCODER = { name: 'CPU', args: ['-c:v', 'libx264', '-preset', 'superfast', '-tune', 'zerolatency', '-crf', '23', '-pix_fmt', 'yuv420p', '-g', '50', '-keyint_min', '25', '-sc_threshold', '0'] };
+const encoder = !hasFfmpeg ? CPU_ENCODER : (ENCODERS.find(e => {
+  try {
+    return spawnSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=black:s=1280x720:r=25', '-t', '0.5', ...e.args, '-f', 'null', '-'], { timeout: 15000 }).status === 0;
+  } catch { return false }
+}) || CPU_ENCODER);
+
 function transcode(req, res, self) {
   const target = self.searchParams.get('url');
   if (!hasFfmpeg) { res.writeHead(501, { 'Access-Control-Allow-Origin': '*' }); return res.end('ffmpeg not installed'); }
   if (!target || !/^https?:\/\//i.test(target)) { res.writeHead(400); return res.end('Missing ?url='); }
   const full = self.searchParams.get('mode') === 'full';
-  const video = full ? ['-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-crf', '23', '-pix_fmt', 'yuv420p', '-g', '50', '-keyint_min', '25', '-sc_threshold', '0'] : ['-c:v', 'copy'];
-  const args = ['-hide_banner', '-loglevel', 'fatal', '-user_agent', UA,
+  const video = full ? encoder.args : ['-c:v', 'copy'];
+  const args = ['-hide_banner', '-loglevel', 'fatal', '-stats', '-stats_period', '5', '-user_agent', UA,
     '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
     '-fflags', '+genpts+discardcorrupt', '-analyzeduration', '3000000', '-probesize', '3000000', '-i', target,
     '-map', '0:v:0?', '-map', '0:a:0?', ...video, '-c:a', 'aac', '-b:a', '160k', '-ac', '2', '-ar', '48000',
     // Live MPEG-TS out: the player starts it within a second or two (fragmented MP4 waits for keyframes)
     '-f', 'mpegts', '-mpegts_flags', '+resend_headers', '-muxdelay', '0', '-muxpreload', '0', 'pipe:1'];
-  console.log(`${new Date().toLocaleTimeString()}  ffmpeg ${full ? 'convert video+audio' : 'convert audio'}  ${target.replace(/^(https?:\/\/[^/]+).*?([^/?#]*)(\?.*)?$/, '$1/…/$2')}`);
+  console.log(`${new Date().toLocaleTimeString()}  ffmpeg ${full ? 'convert video+audio (' + encoder.name + ')' : 'convert audio'}  ${target.replace(/^(https?:\/\/[^/]+).*?([^/?#]*)(\?.*)?$/, '$1/…/$2')}`);
   const ff = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-  ff.stderr.on('data', d => process.stdout.write('  ffmpeg: ' + d));
+  // Report conversion speed every ~10 s: below 1.0x the PC can't keep up and playback will stall
+  let lastSpeed = 0;
+  ff.stderr.on('data', d => {
+    const text = d.toString();
+    const m = text.match(/speed=\s*([\d.]+)x/);
+    if (m) { const now = Date.now(); if (now - lastSpeed > 10000) { lastSpeed = now; const sp = parseFloat(m[1]); console.log(`  conversion speed ${sp.toFixed(2)}x${sp < 1 ? '  <- too slow, playback will stall' : ''}`); } }
+    else if (text.trim()) process.stdout.write('  ffmpeg: ' + text);
+  });
   res.writeHead(200, { 'Content-Type': 'video/mp2t', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
   ff.stdout.pipe(res);
   ff.on('close', () => res.end());
@@ -131,5 +151,5 @@ http.createServer((req, res) => {
   process.exit(1);
 }).listen(PORT, HOST, () => {
   console.log(`M3U Player running at http://localhost:${PORT}  (close this window to stop)`);
-  console.log(hasFfmpeg ? 'ffmpeg found: channels Chrome cannot decode will be converted.' : 'ffmpeg NOT found: some channels (HEVC, AC-3) will not play. Install it with:  winget install Gyan.FFmpeg   then run start.bat again.');
+  console.log(hasFfmpeg ? `ffmpeg found: channels Chrome cannot decode will be converted (video encoder: ${encoder.name}).` : 'ffmpeg NOT found: some channels (HEVC, AC-3) will not play. Install it with:  winget install Gyan.FFmpeg   then run start.bat again.');
 });

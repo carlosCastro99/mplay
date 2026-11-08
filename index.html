@@ -77,7 +77,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:10px 
 </head>
 <body>
 <header>
-  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v14</small></h1>
+  <h1>M3U<span>·</span>Player <small style="font-weight:400;color:var(--muted);letter-spacing:0">v15</small></h1>
   <form class="src" id="urlForm">
     <input type="url" id="url" placeholder="Playlist URL (.m3u / .m3u8)">
     <button class="primary" type="submit">Load</button>
@@ -237,7 +237,7 @@ function play(i){
   document.querySelectorAll('li.on').forEach(l=>l.classList.remove('on'));
   const li = document.querySelector(`li[data-i="${i}"]`); if (li){ li.classList.add('on'); li.scrollIntoView({block:'nearest'}) }
   stopEngines();
-  convertNext = null;
+  convertNext = null; bufferPrimed = false; buffering = false;
   store.set('m3u.last', String(i));
   errLog = [];
   const url = it.url;
@@ -284,7 +284,7 @@ function tryConvert(url, mode, onFail){
   const a = attempt;
   tryTs(location.origin + '/transcode?mode=' + mode + '&url=' + encodeURIComponent(url), () => { if (convertNext){ convertNext = null; onFail() } });
   // A stream that never starts (or plays without a picture) moves on to the next step
-  setTimeout(() => { if (a === attempt && convertNext && (v.currentTime === 0 || v.videoWidth === 0)){ noteErr('convert-' + mode, 'no picture after 25s'); const n = convertNext; convertNext = null; n() } }, 25000);
+  setTimeout(() => { if (a === attempt && convertNext && (v.readyState < 1 || v.videoWidth === 0) && aheadSeconds() === 0){ noteErr('convert-' + mode, 'no picture after 25s'); const n = convertNext; convertNext = null; n() } }, 25000);
 }
 function localRelay(u){ return new URL(window.MPLAY_LOCAL_RELAY, location.href).href + '?url=' + encodeURIComponent(u) }
 function proxyCfg(){ try{ return JSON.parse(store.get('m3u.proxy')||'{}') }catch{ return {} } }
@@ -310,7 +310,7 @@ function direct(url, onFail=failDefault){
 function tryHls(url, onFail){
   const a = attempt;
   if (window.Hls && Hls.isSupported()){
-    hls = new Hls({enableWorker:true, manifestLoadingMaxRetry:0, manifestLoadingTimeOut:8000, levelLoadingMaxRetry:1});
+    hls = new Hls({enableWorker:true, manifestLoadingMaxRetry:0, manifestLoadingTimeOut:8000, levelLoadingMaxRetry:1, maxBufferLength:30, liveSyncDurationCount:4, liveMaxLatencyDurationCount:12});
     hls.on(Hls.Events.ERROR,(_,d)=>{ if (d.fatal && a===attempt){ noteErr('hls', d.details + (d.response&&d.response.code?' HTTP '+d.response.code:'') + (d.reason?' '+d.reason:'')); hls.destroy(); hls=null; onFail() } });
     hls.on(Hls.Events.MANIFEST_PARSED,()=>v.play().catch(()=>{}));
     hls.loadSource(url); hls.attachMedia(v);
@@ -320,13 +320,42 @@ function tryHls(url, onFail){
 function tryTs(url, onFail){
   const a = attempt;
   if (!(window.mpegts && mpegts.getFeatureList().mseLivePlayback)) return onFail();
-  ts = mpegts.createPlayer({type:'mpegts', isLive:true, url}, {enableWorker:true, lazyLoad:false});
+  ts = mpegts.createPlayer({type:'mpegts', isLive:true, url}, {enableWorker:true, lazyLoad:false, enableStashBuffer:true, stashInitialSize:1024*1024, liveBufferLatencyChasing:false, autoCleanupSourceBuffer:true, autoCleanupMaxBackwardDuration:60, autoCleanupMinBackwardDuration:30});
   ts.on(mpegts.Events.ERROR,(type,detail,info)=>{ if (a===attempt){ noteErr('ts', `${type} ${detail}${info&&info.code?' HTTP '+info.code:''}${info&&info.msg?' '+info.msg:''}`); try{ts.destroy()}catch{} ts=null; onFail() } });
   ts.on(mpegts.Events.MEDIA_INFO, info => { if (a===attempt && info && info.mimeType) noteErr('codecs', info.mimeType) });
   ts.attachMediaElement(v); ts.load(); v.play().catch(()=>{});
 }
 
+// Keep ~10 s in reserve: hold playback until that much is buffered, at the start and after every stall
+const BUFFER_TARGET = 10, BUFFER_MAX_WAIT = 30000;
+let bufferPrimed = false, buffering = false, bufferSince = 0;
+function aheadSeconds(){
+  const b = v.buffered, t = v.currentTime;
+  for (let k = 0; k < b.length; k++) if (b.start(k) <= t + 0.5 && b.end(k) > t) return b.end(k) - t;
+  return b.length ? Math.max(0, b.end(b.length - 1) - t) : 0;
+}
+function startBuffering(){
+  if (buffering) return;
+  buffering = true; bufferSince = Date.now(); v.pause(); bufferTick();
+}
+function bufferTick(){
+  if (!buffering) return;
+  const a = aheadSeconds(), waited = Date.now() - bufferSince;
+  if (a >= BUFFER_TARGET || waited > BUFFER_MAX_WAIT){
+    buffering = false;
+    status(a < BUFFER_TARGET ? 'The stream arrives slower than real time, so it may keep pausing. Check the conversion speed in the black window.' : '');
+    // Live streams: start from the oldest buffered point so the full reserve is used
+    if (v.buffered.length && v.currentTime < v.buffered.start(0)) v.currentTime = v.buffered.start(0);
+    v.play().catch(()=>{});
+  } else {
+    status(`Buffering… ${Math.floor(a)} / ${BUFFER_TARGET} s`);
+    setTimeout(bufferTick, 250);
+  }
+}
+v.addEventListener('waiting', () => { if (bufferPrimed && !v.seeking) startBuffering() });
 v.addEventListener('playing',()=>{
+  if (!bufferPrimed){ bufferPrimed = true; convertNext = null; startBuffering(); return }
+  if (buffering) return;
   status('');
   convertNext = null;
   setTimeout(()=>{ if (!v.paused && v.videoWidth===0 && !convertNext) status('Playing, but no picture: this channel probably uses HEVC/H.265 video, which this browser can\'t decode. Try Microsoft Edge, or VLC.', true) }, 3000);
